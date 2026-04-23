@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PLATINUM | 铂金价格监控仪表板</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #0a1628 0%, #0f1a2f 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 24px;
+            min-height: 100vh;
+            color: #e2e8f0;
+        }
+        .dashboard { max-width: 1400px; margin: 0 auto; }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 16px;
+        }
+        .title h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #f5f5f5, #c0a06b);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .title p { color: #8ba0b8; font-size: 0.75rem; margin-top: 4px; }
+        .update-info { text-align: right; }
+        .update-time { font-size: 0.7rem; color: #8ba0b8; }
+        .live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(16,185,129,0.15);
+            padding: 5px 14px;
+            border-radius: 40px;
+            font-size: 0.7rem;
+            color: #10b981;
+            margin-top: 8px;
+        }
+        .live-dot {
+            width: 8px; height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity:1; transform:scale(1); }
+            100% { opacity:0.3; transform:scale(1.2); }
+        }
+        .price-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .price-card {
+            background: rgba(15,25,45,0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 28px;
+            padding: 24px;
+            border: 1px solid rgba(255,215,150,0.15);
+            position: relative;
+        }
+        .data-date-badge {
+            position: absolute;
+            top: 16px; right: 20px;
+            font-size: 0.6rem;
+            background: rgba(0,0,0,0.5);
+            padding: 2px 8px;
+            border-radius: 20px;
+            color: #c0a06b;
+        }
+        .price-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .card-badge {
+            font-size: 0.7rem; color: #c0a06b;
+            background: rgba(192,160,107,0.15);
+            padding: 4px 10px; border-radius: 20px;
+        }
+        .price-main {
+            font-size: 3.2rem; font-weight: 800;
+            color: #f5f5f5; line-height: 1.2; margin-bottom: 20px;
+        }
+        .price-main small { font-size: 1rem; font-weight: 400; color: #8ba0b8; }
+        .price-details {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255,255,255,0.08);
+        }
+        .detail-item { text-align: center; }
+        .detail-label { font-size: 0.65rem; text-transform: uppercase; color: #8ba0b8; letter-spacing: 1px; margin-bottom: 4px; }
+        .detail-value { font-size: 1.1rem; font-weight: 600; color: #f5f5f5; }
+        .detail-value.positive { color: #10b981; }
+        .detail-value.negative { color: #ef4444; }
+        .rate-card {
+            background: rgba(15,25,45,0.6);
+            border-radius: 20px;
+            padding: 16px 24px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            border: 1px solid rgba(255,215,150,0.1);
+        }
+        .rate-item { display: flex; align-items: baseline; gap: 8px; }
+        .rate-label { font-size: 0.7rem; color: #8ba0b8; }
+        .rate-value { font-size: 1.3rem; font-weight: 700; color: #c0a06b; }
+        .rate-note { font-size: 0.7rem; color: #5a7a9a; }
+        .compare-card {
+            background: linear-gradient(135deg, rgba(192,160,107,0.08), rgba(15,25,45,0.6));
+            border-radius: 24px;
+            padding: 20px 24px;
+            margin-bottom: 28px;
+            border: 1px solid rgba(192,160,107,0.2);
+        }
+        .compare-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 2px; color: #c0a06b; margin-bottom: 16px; }
+        .compare-values {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .compare-sge, .compare-lbma { text-align: center; flex: 1; }
+        .compare-sge .value, .compare-lbma .value { color: #f5f5f5; font-size: 2rem; font-weight: 700; }
+        .compare-label { font-size: 0.7rem; color: #8ba0b8; margin-top: 4px; }
+        .compare-diff { text-align: center; padding: 0 20px; }
+        .diff-value { font-size: 1.8rem; font-weight: 800; }
+        .diff-value.positive { color: #10b981; }
+        .diff-value.negative { color: #ef4444; }
+        .diff-percent { font-size: 0.8rem; color: #8ba0b8; }
+        .analysis-note {
+            margin-top: 16px; font-size: 0.7rem; color: #5a7a9a;
+            text-align: center;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding-top: 12px;
+        }
+        .full-width-chart { margin-bottom: 24px; }
+        .charts-row { display: grid; grid-template-columns: repeat(2,1fr); gap: 22px; margin-bottom: 24px; }
+        .chart-card {
+            background: rgba(15,25,45,0.6);
+            border-radius: 24px;
+            padding: 18px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .chart-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 12px; padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .chart-header h3 { font-size: 0.85rem; font-weight: 500; color: #c0a06b; }
+        .chart-container { width: 100%; height: 320px; }
+        .error-banner {
+            display: none;
+            background: rgba(239,68,68,0.15);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: 12px;
+            padding: 12px 20px;
+            margin-bottom: 20px;
+            font-size: 0.75rem;
+            color: #ef4444;
+        }
+        footer {
+            margin-top: 28px; text-align: center;
+            font-size: 0.6rem; color: #5a7a9a;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding-top: 16px;
+        }
+        @media (max-width: 900px) {
+            body { padding: 16px; }
+            .price-row { grid-template-columns: 1fr; }
+            .charts-row { grid-template-columns: 1fr; }
+            .compare-values { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+<div class="dashboard">
+    <div class="header">
+        <div class="title">
+            <h1>PLATINUM</h1>
+            <p>铂金价格监控仪表板 · 数据每日收盘后自动更新</p>
+        </div>
+        <div class="update-info">
+            <div class="update-time" id="updateTimeText">数据更新时间：加载中...</div>
+            <div class="live-badge"><span class="live-dot"></span> 自动更新中</div>
+        </div>
+    </div>
+
+    <div class="error-banner" id="errorBanner">⚠ 数据加载失败，请稍后刷新页面重试</div>
+
+    <div class="price-row">
+        <div class="price-card">
+            <div class="data-date-badge" id="sgeDataDate">数据日期: --</div>
+            <div class="price-card-header">
+                <span>上海黄金交易所</span>
+                <span class="card-badge">SGE Pt99.95</span>
+            </div>
+            <div class="price-main"><span id="sgePrice">--</span> <small>元/克</small></div>
+            <div class="price-details">
+                <div class="detail-item"><div class="detail-label">开盘</div><div class="detail-value" id="sgeOpen">--</div></div>
+                <div class="detail-item"><div class="detail-label">最高</div><div class="detail-value" id="sgeHigh">--</div></div>
+                <div class="detail-item"><div class="detail-label">最低</div><div class="detail-value" id="sgeLow">--</div></div>
+                <div class="detail-item"><div class="detail-label">涨跌</div><div class="detail-value" id="sgeChange">--</div></div>
+            </div>
+        </div>
+        <div class="price-card">
+            <div class="data-date-badge" id="lbmaDataDate">数据日期: --</div>
+            <div class="price-card-header">
+                <span>伦敦铂钯市场</span>
+                <span class="card-badge">LBMA PM Fix</span>
+            </div>
+            <div class="price-main"><span id="lbmaPrice">--</span> <small>美元/盎司</small></div>
+            <div class="price-details">
+                <div class="detail-item"><div class="detail-label">人民币换算</div><div class="detail-value" id="convertedPrice">--</div></div>
+                <div class="detail-item"><div class="detail-label">计算公式</div><div class="detail-value" style="font-size:0.7rem;" id="calcFormula">—</div></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="rate-card">
+        <div class="rate-item">
+            <span class="rate-label">汇率信息</span>
+            <span class="rate-value" id="exchangeRate">--</span>
+            <span class="rate-note">人民币/100美元 (中国银行中间价)</span>
+        </div>
+        <div class="rate-item">
+            <span class="rate-label">换算常数</span>
+            <span class="rate-value">31.1035</span>
+            <span class="rate-note">1盎司 = 克</span>
+        </div>
+    </div>
+
+    <div class="compare-card">
+        <div class="compare-title">价格对比分析</div>
+        <div class="compare-values">
+            <div class="compare-sge"><div class="value" id="compareSge">--</div><div class="compare-label">上海黄金交易所 (元/克)</div></div>
+            <div class="compare-diff">
+                <div class="diff-value" id="diffValue">--</div>
+                <div class="diff-percent" id="diffPercent">--</div>
+            </div>
+            <div class="compare-lbma"><div class="value" id="compareLbma">--</div><div class="compare-label">伦敦铂金 (换算) 元/克</div></div>
+        </div>
+        <div class="analysis-note">数据来源：SGE Pt99.95 | LBMA 铂金 PM 定盘价 | 汇率：中国银行历史中间价</div>
+    </div>
+
+    <div class="full-width-chart">
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>近30个交易日价格走势对比</h3>
+                <span style="font-size:0.6rem;">SGE收盘价 vs LBMA换算价 (元/克)</span>
+            </div>
+            <div id="recent30Chart" class="chart-container"></div>
+        </div>
+    </div>
+
+    <div class="charts-row">
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>2025年 月度价格走势</h3>
+                <span style="font-size:0.6rem;">LBMA换算 vs SGE (元/克)</span>
+            </div>
+            <div id="monthlyChart2025" class="chart-container"></div>
+        </div>
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>2022-2026年 年度平均价格趋势</h3>
+                <span style="font-size:0.6rem;">SGE 年均价 (成交量加权)</span>
+            </div>
+            <div id="yearlyChart" class="chart-container"></div>
+        </div>
+    </div>
+
+    <footer>
+        数据来源：上海黄金交易所 Pt99.95 | LBMA 铂金 PM 定盘价 | 汇率：中国银行历史中间价<br>
+        由 GitHub Actions 每日自动更新 · 仅供参考，不构成投资建议
+    </footer>
+</div>
+
+<script>
+(function() {
+    // 从 data.json 加载数据（由 Python 脚本每日自动生成）
+    fetch('./data.json?t=' + Date.now())
+        .then(r => { if (!r.ok) throw new Error('fetch failed'); return r.json(); })
+        .then(data => renderDashboard(data))
+        .catch(err => {
+            console.error(err);
+            document.getElementById('errorBanner').style.display = 'block';
+        });
+
+    function renderDashboard(data) {
+        const { latest, history, monthly2025, yearly, rates } = data;
+
+        // 更新时间
+        document.getElementById('updateTimeText').innerHTML =
+            '数据更新时间：' + (latest.updatedAt || '--');
+
+        // SGE 最新数据
+        document.getElementById('sgePrice').innerText = latest.sge.close.toFixed(2);
+        document.getElementById('sgeOpen').innerText = latest.sge.open.toFixed(2);
+        document.getElementById('sgeHigh').innerText = latest.sge.high.toFixed(2);
+        document.getElementById('sgeLow').innerText = latest.sge.low.toFixed(2);
+        document.getElementById('sgeDataDate').innerText = '数据日期: ' + latest.date;
+        const chEl = document.getElementById('sgeChange');
+        chEl.innerText = (latest.sge.change >= 0 ? '+' : '') + latest.sge.change.toFixed(2);
+        chEl.className = 'detail-value ' + (latest.sge.change >= 0 ? 'positive' : 'negative');
+
+        // LBMA 最新数据
+        document.getElementById('lbmaPrice').innerText = latest.lbma.pm.toFixed(2);
+        document.getElementById('lbmaDataDate').innerText = '数据日期: ' + latest.date;
+        const rate = latest.rate;
+        const converted = (latest.lbma.pm * rate / 31.1035).toFixed(2);
+        document.getElementById('convertedPrice').innerText = converted;
+        document.getElementById('calcFormula').innerText =
+            latest.lbma.pm + ' × ' + rate.toFixed(4) + ' ÷ 31.1035';
+
+        // 汇率
+        document.getElementById('exchangeRate').innerText = (rate * 100).toFixed(4);
+
+        // 对比
+        const sgeVal = latest.sge.close;
+        const lbmaConv = latest.lbma.pm * rate / 31.1035;
+        document.getElementById('compareSge').innerText = sgeVal.toFixed(2);
+        document.getElementById('compareLbma').innerText = lbmaConv.toFixed(2);
+        const diff = sgeVal - lbmaConv;
+        const diffPct = (diff / lbmaConv * 100).toFixed(2);
+        const diffEl = document.getElementById('diffValue');
+        diffEl.innerText = (diff >= 0 ? '+' : '') + diff.toFixed(2);
+        diffEl.className = 'diff-value ' + (diff >= 0 ? 'positive' : 'negative');
+        document.getElementById('diffPercent').innerText =
+            '(' + (diffPct >= 0 ? '+' : '') + diffPct + '%)';
+
+        // 图表
+        drawRecent30(history, rates);
+        drawMonthly(monthly2025);
+        drawYearly(yearly);
+    }
+
+    function drawRecent30(history, ratesMap) {
+        const last30 = history.slice(-30);
+        const chart = echarts.init(document.getElementById('recent30Chart'));
+        chart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: { trigger: 'axis', backgroundColor: '#0f1a2f', borderColor: '#c0a06b', textStyle: { color: '#e2e8f0' } },
+            legend: { data: ['SGE收盘价 (元/克)', 'LBMA换算价 (元/克)'], textStyle: { color: '#8ba0b8' } },
+            grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
+            xAxis: { type: 'category', data: last30.map(d => d.date), axisLabel: { rotate: 35, fontSize: 10, color: '#8ba0b8' }, axisLine: { lineStyle: { color: '#2a3a5c' } } },
+            yAxis: { type: 'value', name: '元/克', nameTextStyle: { color: '#8ba0b8' }, axisLabel: { color: '#8ba0b8' }, splitLine: { lineStyle: { color: '#1a2a3c' } } },
+            series: [
+                { name: 'SGE收盘价 (元/克)', type: 'line', data: last30.map(d => d.sge), smooth: true, lineStyle: { color: '#10b981', width: 2 }, itemStyle: { color: '#10b981' }, areaStyle: { opacity: 0.08 } },
+                { name: 'LBMA换算价 (元/克)', type: 'line', data: last30.map(d => d.lbmaCny), smooth: true, lineStyle: { color: '#c0a06b', width: 2, type: 'dashed' }, itemStyle: { color: '#c0a06b' }, connectNulls: true }
+            ]
+        });
+        window.addEventListener('resize', () => chart.resize());
+    }
+
+    function drawMonthly(monthly) {
+        const chart = echarts.init(document.getElementById('monthlyChart2025'));
+        const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+        chart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: { trigger: 'axis', backgroundColor: '#0f1a2f', borderColor: '#c0a06b', textStyle: { color: '#e2e8f0' } },
+            legend: { data: ['LBMA换算 (元/克)', 'SGE (元/克)'], textStyle: { color: '#8ba0b8' } },
+            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            xAxis: { type: 'category', data: months, axisLabel: { color: '#8ba0b8' }, axisLine: { lineStyle: { color: '#2a3a5c' } } },
+            yAxis: { type: 'value', name: '元/克', nameTextStyle: { color: '#8ba0b8' }, axisLabel: { color: '#8ba0b8' }, splitLine: { lineStyle: { color: '#1a2a3c' } } },
+            series: [
+                { name: 'LBMA换算 (元/克)', type: 'line', data: monthly.lbmaCny, smooth: true, lineStyle: { color: '#c0a06b', width: 2 }, itemStyle: { color: '#c0a06b' }, symbol: 'circle' },
+                { name: 'SGE (元/克)', type: 'line', data: monthly.sge, smooth: true, lineStyle: { color: '#10b981', width: 2 }, itemStyle: { color: '#10b981' }, symbol: 'diamond' }
+            ]
+        });
+        window.addEventListener('resize', () => chart.resize());
+    }
+
+    function drawYearly(yearly) {
+        const chart = echarts.init(document.getElementById('yearlyChart'));
+        chart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'axis', backgroundColor: '#0f1a2f', borderColor: '#c0a06b', textStyle: { color: '#e2e8f0' },
+                formatter: p => p[0].value === null ? `${p[0].axisValue}<br/>SGE年均价: 数据收集中` : `${p[0].axisValue}<br/>SGE年均价: ${p[0].value} 元/克`
+            },
+            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            xAxis: { type: 'category', data: yearly.years, axisLabel: { color: '#8ba0b8' }, axisLine: { lineStyle: { color: '#2a3a5c' } } },
+            yAxis: { type: 'value', name: '元/克', nameTextStyle: { color: '#8ba0b8' }, axisLabel: { color: '#8ba0b8' }, splitLine: { lineStyle: { color: '#1a2a3c' } } },
+            series: [{ name: 'SGE年均价', type: 'line', data: yearly.sgeAvg, lineStyle: { color: '#10b981', width: 3 }, itemStyle: { color: '#10b981' }, symbol: 'circle', symbolSize: 8, areaStyle: { opacity: 0.1 }, connectNulls: false }]
+        });
+        window.addEventListener('resize', () => chart.resize());
+    }
+})();
+</script>
+</body>
+</html>
