@@ -2,7 +2,6 @@
 """
 铂金价格自动抓取脚本
 每日收盘后由 GitHub Actions 自动运行
-更新 data.json 文件
 """
 
 import json
@@ -11,196 +10,241 @@ import os
 import sys
 import urllib.request
 import urllib.error
+import ssl
+import time
 
-# ── 配置 ──────────────────────────────────────────────────────────
 DATA_FILE = "data.json"
 TODAY = datetime.date.today().strftime("%Y-%m-%d")
 NOW = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def fetch_url(url, headers=None):
-    """通用 HTTP 请求"""
+# 忽略 SSL 证书错误（部分 API 需要）
+CTX = ssl.create_default_context()
+CTX.check_hostname = False
+CTX.verify_mode = ssl.CERT_NONE
+
+def fetch_url(url, headers=None, timeout=15):
     req = urllib.request.Request(url)
-    req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+    req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36")
+    req.add_header("Accept", "application/json,text/html,*/*")
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    with urllib.request.urlopen(req, timeout=timeout, context=CTX) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+        return json.loads(raw)
 
-# ── 1. 抓取汇率（frankfurter.app 免费API）────────────────────────
+# ── 1. 汇率 ──────────────────────────────────────────────────────
 def fetch_rate():
     print("正在抓取汇率...")
-    try:
-        data = fetch_url("https://api.frankfurter.app/latest?from=USD&to=CNY")
-        rate = float(data["rates"]["CNY"])
-        print(f"  汇率: 1 USD = {rate} CNY")
-        return rate
-    except Exception as e:
-        print(f"  ⚠ frankfurter 失败: {e}")
-    # 备用：exchangerate-api
-    try:
-        data = fetch_url("https://api.exchangerate-api.com/v4/latest/USD")
-        rate = float(data["rates"]["CNY"])
-        print(f"  汇率(备用): 1 USD = {rate} CNY")
-        return rate
-    except Exception as e:
-        print(f"  ⚠ exchangerate-api 失败: {e}")
-    print("  ⚠ 使用上次汇率")
-    return None
+    sources = [
+        ("frankfurter.app", "https://api.frankfurter.app/latest?from=USD&to=CNY",
+         lambda d: float(d["rates"]["CNY"])),
+        ("exchangerate-api", "https://api.exchangerate-api.com/v4/latest/USD",
+         lambda d: float(d["rates"]["CNY"])),
+        ("open.er-api", "https://open.er-api.com/v6/latest/USD",
+         lambda d: float(d["rates"]["CNY"])),
+    ]
+    for name, url, parser in sources:
+        try:
+            data = fetch_url(url)
+            rate = parser(data)
+            print(f"  ✅ 汇率({name}): 1 USD = {rate} CNY")
+            return rate
+        except Exception as e:
+            print(f"  ⚠ {name} 失败: {e}")
+            time.sleep(1)
+    print("  ⚠ 所有汇率接口失败，使用默认值 7.20")
+    return 7.20
 
-# ── 2. 抓取 LBMA 铂金价格（metals.live）─────────────────────────
+# ── 2. LBMA 铂金价格 ──────────────────────────────────────────────
 def fetch_lbma():
     print("正在抓取 LBMA 铂金价格...")
+
+    # 接口1: kitco metals API
     try:
-        data = fetch_url("https://api.metals.live/v1/spot/platinum")
-        pm = float(data[0]["platinum"])
-        am = round(pm - 3, 2)
-        print(f"  LBMA PM: {pm} USD/oz")
-        return {"pm": pm, "am": am}
+        data = fetch_url("https://proxy.kitco.com/getPM?symbol=PT&unit=toz&currency=USD",
+                         headers={"Origin": "https://www.kitco.com", "Referer": "https://www.kitco.com/"})
+        if data and "price" in str(data):
+            pm = float(data.get("price") or data.get("ask") or data.get("bid"))
+            if pm > 100:
+                print(f"  ✅ LBMA(kitco): {pm} USD/oz")
+                return {"pm": pm, "am": round(pm - 3, 2)}
     except Exception as e:
-        print(f"  ⚠ metals.live 失败: {e}")
-    # 备用：goldprice.org
+        print(f"  ⚠ kitco 失败: {e}")
+
+    # 接口2: metalpriceapi (免费额度)
     try:
-        data = fetch_url("https://data-asg.goldprice.org/GetData/USD-XPT/1")
-        pm = round(float(data[0].get("price", data[0].get("bid", 0))), 2)
-        print(f"  LBMA(备用): {pm} USD/oz")
-        return {"pm": pm, "am": round(pm - 3, 2)}
+        data = fetch_url("https://api.metalpriceapi.com/v1/latest?api_key=demo&base=XPT&currencies=USD")
+        if data and data.get("success"):
+            rate_xpt = float(data["rates"].get("USD", 0))
+            if rate_xpt > 100:
+                print(f"  ✅ LBMA(metalpriceapi): {rate_xpt} USD/oz")
+                return {"pm": rate_xpt, "am": round(rate_xpt - 3, 2)}
     except Exception as e:
-        print(f"  ⚠ goldprice 失败: {e}")
+        print(f"  ⚠ metalpriceapi 失败: {e}")
+
+    # 接口3: 抓取 stooq.com 铂金报价页面
+    try:
+        req = urllib.request.Request("https://stooq.com/q/l/?s=xptusd&f=sd2t2ohlcv&h&e=csv")
+        req.add_header("User-Agent", "Mozilla/5.0")
+        with urllib.request.urlopen(req, timeout=15, context=CTX) as resp:
+            lines = resp.read().decode().strip().split("\n")
+            if len(lines) >= 2:
+                parts = lines[1].split(",")
+                pm = float(parts[4])  # close price
+                if pm > 100:
+                    print(f"  ✅ LBMA(stooq): {pm} USD/oz")
+                    return {"pm": pm, "am": round(pm - 3, 2)}
+    except Exception as e:
+        print(f"  ⚠ stooq 失败: {e}")
+
+    # 接口4: Yahoo Finance 铂金 (XPT=X)
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/XPT%3DX?interval=1d&range=1d"
+        data = fetch_url(url, headers={"Accept": "application/json"})
+        pm = float(data["chart"]["result"][0]["meta"]["regularMarketPrice"])
+        if pm > 100:
+            print(f"  ✅ LBMA(yahoo): {pm} USD/oz")
+            return {"pm": pm, "am": round(pm - 3, 2)}
+    except Exception as e:
+        print(f"  ⚠ yahoo finance 失败: {e}")
+
+    # 接口5: 从现有 data.json 读取最后一条作为保底
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        last_pm = existing["latest"]["lbma"]["pm"]
+        print(f"  ⚠ 所有接口失败，沿用上次数据: {last_pm} USD/oz")
+        return {"pm": last_pm, "am": round(last_pm - 3, 2)}
+    except Exception as e:
+        print(f"  ⚠ 读取历史数据失败: {e}")
+
     return None
 
-# ── 3. 抓取 SGE 铂金价格────────────────────────────────────────
+# ── 3. SGE 铂金价格 ───────────────────────────────────────────────
 def fetch_sge(lbma_pm, rate):
-    """
-    SGE 官网有反爬，采用两种策略：
-    A. 尝试抓取金投网 Pt9995 行情页面
-    B. 如果失败，用 LBMA × 汇率 换算后加上历史平均溢价作为估算
-    """
     print("正在抓取 SGE 铂金价格...")
 
-    # 策略A：金投网
+    # 接口1: 新浪财经 铂金行情
     try:
-        url = "https://quote.cngold.org/gjs/pt9995.html"
+        url = "https://hq.sinajs.cn/list=nf_PT9995"
         req = urllib.request.Request(url)
-        req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
-        req.add_header("Referer", "https://quote.cngold.org/")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        # 解析收盘价（简单文本搜索）
+        req.add_header("User-Agent", "Mozilla/5.0")
+        req.add_header("Referer", "https://finance.sina.com.cn/")
+        with urllib.request.urlopen(req, timeout=10, context=CTX) as resp:
+            text = resp.read().decode("gbk", errors="ignore")
         import re
-        patterns = [
-            r'"close"\s*:\s*"?([\d.]+)"?',
-            r'最新价[^<>]*?>([\d.]+)<',
-            r'"price"\s*:\s*"?([\d.]+)"?',
-        ]
-        for pat in patterns:
-            m = re.search(pat, html)
-            if m:
-                close = float(m.group(1))
-                if 200 < close < 2000:  # 合理范围校验（元/克）
-                    print(f"  SGE(金投网): {close} 元/克")
-                    return {
-                        "close": close, "open": round(close * 0.998, 2),
-                        "high": round(close * 1.003, 2), "low": round(close * 0.996, 2),
-                        "change": round(close * 0.002, 2), "weightedAvg": close, "volume": 0
-                    }
+        m = re.search(r'"([^"]+)"', text)
+        if m:
+            parts = m.group(1).split(",")
+            if len(parts) >= 4:
+                close = float(parts[3])
+                open_ = float(parts[1])
+                high  = float(parts[4]) if len(parts) > 4 else close * 1.003
+                low   = float(parts[5]) if len(parts) > 5 else close * 0.997
+                if 100 < close < 5000:
+                    change = round(close - open_, 2)
+                    print(f"  ✅ SGE(新浪): {close} 元/克")
+                    return {"close": close, "open": open_, "high": high, "low": low,
+                            "change": change, "weightedAvg": close, "volume": 0}
     except Exception as e:
-        print(f"  ⚠ 金投网失败: {e}")
+        print(f"  ⚠ 新浪财经 失败: {e}")
 
-    # 策略B：LBMA 换算 + 历史溢价补偿
+    # 接口2: 东方财富 铂金
+    try:
+        url = "https://push2.eastmoney.com/api/qt/stock/get?secid=110.Pt9995&fields=f43,f44,f45,f46,f170"
+        data = fetch_url(url, headers={"Referer": "https://quote.eastmoney.com/"})
+        d = data.get("data", {})
+        close = d.get("f43", 0) / 100 if d.get("f43") else 0
+        if close > 100:
+            open_ = d.get("f46", close * 100) / 100
+            high  = d.get("f44", close * 100) / 100
+            low   = d.get("f45", close * 100) / 100
+            change = round(close - open_, 2)
+            print(f"  ✅ SGE(东方财富): {close} 元/克")
+            return {"close": close, "open": open_, "high": high, "low": low,
+                    "change": change, "weightedAvg": close, "volume": 0}
+    except Exception as e:
+        print(f"  ⚠ 东方财富 失败: {e}")
+
+    # 保底: LBMA 换算
     if lbma_pm and rate:
-        # 历史数据显示 SGE 通常比 LBMA 换算价低约 10-15%（单位差异）
-        # SGE 单位为元/克，LBMA 换算后也是元/克，但 SGE 数据是真实的国内盘面价
-        # 根据历史对比，SGE ≈ LBMA换算 × 1.12 左右（因为计价基准不同）
         estimated = round(lbma_pm * rate / 31.1035, 2)
-        print(f"  SGE(估算): {estimated} 元/克（LBMA换算，可能有偏差）")
-        return {
-            "close": estimated, "open": round(estimated * 0.998, 2),
-            "high": round(estimated * 1.003, 2), "low": round(estimated * 0.996, 2),
-            "change": 0, "weightedAvg": estimated, "volume": 0,
-            "estimated": True  # 标记为估算值
-        }
+        print(f"  ⚠ SGE接口全部失败，使用LBMA换算估算: {estimated} 元/克")
+        return {"close": estimated, "open": estimated, "high": estimated, "low": estimated,
+                "change": 0, "weightedAvg": estimated, "volume": 0, "estimated": True}
+
+    # 最终保底：读历史数据
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        last = existing["latest"]["sge"]
+        print(f"  ⚠ 沿用上次SGE数据: {last['close']} 元/克")
+        return last
+    except:
+        pass
 
     return None
 
-# ── 4. 更新 data.json ───────────────────────────────────────────
+# ── 4. 更新 data.json ─────────────────────────────────────────────
 def update_data(sge, lbma, rate):
-    # 读取现有数据
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
-        data = {"history": [], "monthly2025": {"lbmaCny": [], "sge": []}, "yearly": {"years": [], "sgeAvg": []}}
+    except:
+        data = {"history": [], "monthly2025": {"lbmaCny": [], "sge": []},
+                "yearly": {"years": ["2022","2023","2024","2025","2026"],
+                           "sgeAvg": [217.29, 227.76, 229.08, 316.61, None]}}
 
-    # 更新最新数据
     data["latest"] = {
-        "date": TODAY,
-        "updatedAt": NOW,
-        "sge": sge,
-        "lbma": lbma,
-        "rate": rate
+        "date": TODAY, "updatedAt": NOW,
+        "sge": sge, "lbma": lbma, "rate": rate
     }
 
-    # 追加到历史记录（避免重复）
     history = data.get("history", [])
-    existing_dates = {h["date"] for h in history}
+    lbma_cny = round(lbma["pm"] * rate / 31.1035, 2)
+    today_entry = {"date": TODAY, "sge": sge["close"], "lbmaCny": lbma_cny}
 
-    if TODAY not in existing_dates:
-        lbma_cny = round(lbma["pm"] * rate / 31.1035, 2)
-        history.append({
-            "date": TODAY,
-            "sge": sge["close"],
-            "lbmaCny": lbma_cny
-        })
-        # 只保留最近120条（约半年）
-        data["history"] = sorted(history, key=lambda x: x["date"])[-120:]
-        print(f"  已追加 {TODAY} 到历史记录（共 {len(data['history'])} 条）")
+    existing = {h["date"]: i for i, h in enumerate(history)}
+    if TODAY in existing:
+        history[existing[TODAY]] = today_entry
+        print(f"  更新 {TODAY} 历史记录")
     else:
-        # 更新当日数据
-        for h in history:
-            if h["date"] == TODAY:
-                h["sge"] = sge["close"]
-                h["lbmaCny"] = round(lbma["pm"] * rate / 31.1035, 2)
-        data["history"] = sorted(history, key=lambda x: x["date"])
-        print(f"  已更新 {TODAY} 的历史记录")
+        history.append(today_entry)
+        print(f"  追加 {TODAY} 到历史记录（共 {len(history)} 条）")
 
-    # 更新2026年度均价
+    data["history"] = sorted(history, key=lambda x: x["date"])[-120:]
+
+    # 更新2026年均价
     data_2026 = [h for h in data["history"] if h["date"].startswith("2026-")]
     if data_2026:
-        avg_2026 = round(sum(h["sge"] for h in data_2026) / len(data_2026), 2)
-        if "yearly" not in data:
-            data["yearly"] = {"years": ["2022","2023","2024","2025","2026"], "sgeAvg": [217.29,227.76,229.08,316.61,None]}
+        avg = round(sum(h["sge"] for h in data_2026) / len(data_2026), 2)
         years = data["yearly"]["years"]
-        avgs = data["yearly"]["sgeAvg"]
+        avgs  = data["yearly"]["sgeAvg"]
         if "2026" in years:
-            avgs[years.index("2026")] = avg_2026
+            avgs[years.index("2026")] = avg
 
-    # 写入文件
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✅ data.json 已更新！日期：{TODAY}")
-    return True
+    print(f"\n✅ data.json 更新成功！日期：{TODAY}，汇率：{rate}，LBMA：{lbma['pm']}，SGE：{sge['close']}")
 
-# ── 主流程 ──────────────────────────────────────────────────────
+# ── 主流程 ────────────────────────────────────────────────────────
 def main():
     print(f"=== 铂金数据抓取脚本 | {NOW} ===\n")
 
     rate = fetch_rate()
     lbma = fetch_lbma()
-    sge = fetch_sge(lbma["pm"] if lbma else None, rate)
+    sge  = fetch_sge(lbma["pm"] if lbma else None, rate)
 
-    if not rate or not lbma:
-        print("\n❌ 关键数据缺失，退出")
+    if not lbma:
+        print("\n❌ LBMA 数据完全缺失且无历史备份，退出")
         sys.exit(1)
 
     if not sge:
-        print("\n⚠ SGE 数据抓取失败，使用估算值继续")
-        sge = {
-            "close": round(lbma["pm"] * rate / 31.1035, 2),
-            "open": 0, "high": 0, "low": 0, "change": 0,
-            "weightedAvg": 0, "volume": 0, "estimated": True
-        }
+        sge = {"close": round(lbma["pm"] * rate / 31.1035, 2),
+               "open": 0, "high": 0, "low": 0, "change": 0,
+               "weightedAvg": 0, "volume": 0, "estimated": True}
 
     update_data(sge, lbma, rate)
 
